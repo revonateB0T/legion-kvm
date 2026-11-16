@@ -381,7 +381,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
     command.args(["-machine","q35,accel=kvm,smm=off,memory-backend=ram","-cpu",&model,"-m",&memory_mib.to_string()])
         .args(topology.qemu_args(&model)?)
         .args(["-object",&ram.argument,"-nodefaults","-no-reboot","-monitor","none","-serial","stdio","-nic","none"])
-        .args(["-device","virtio-keyboard-pci","-device","virtio-tablet-pci"])
+        .args(["-device","virtio-keyboard-pci","-device","virtio-mouse-pci"])
         .args(["-display",&if config.window { if fullscreen { "sdl,gl=es,full-screen=on".to_owned() } else { "sdl,gl=es".to_owned() } } else { format!("egl-headless,rendernode={}",qemu_path(&node)?) },
             "-device",&format!("virtio-gpu-gl-pci,hostmem=1G,blob=on,drm_native_context=off,venus=on,xres={},yres={}",dimensions.0,dimensions.1)])
         .arg("-kernel").arg(kernel).arg("-initrd").arg(initrd)
@@ -446,7 +446,6 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
     if config.window && config.desktop_renderer {
         command
             .env("LEGION_SCANOUT_EXTERNAL", "1")
-            .env("LEGION_DESKTOP_INPUT", "1")
             .env_remove("DRI_PRIME")
             .env_remove("__GLX_VENDOR_LIBRARY_NAME")
             .env(

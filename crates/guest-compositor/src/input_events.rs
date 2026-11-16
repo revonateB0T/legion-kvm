@@ -62,6 +62,8 @@ impl State {
             "cursor_visible": self.ordered_input.cursor_visible,
             "constraint": format!("{:?}", self.input_capture_mode()),
             "pointer_inside": self.ordered_input.pointer_inside,
+            "relative_supported": self.ordered_input.relative_supported,
+            "capture_active": self.ordered_input.capture_active,
             "host_relative_supported": self.ordered_input.host_relative_supported,
             "host_capture_active": self.ordered_input.host_capture_active,
             "absolute_events": self.ordered_input.absolute_events,
@@ -75,6 +77,9 @@ impl State {
         }
     }
     pub(crate) fn enable_relative_input(&mut self, dh: &DisplayHandle) {
+        if self.ordered_input.relative.is_some() {
+            return;
+        }
         self.ordered_input.relative_supported = true;
         self.ordered_input.relative = Some(RelativePointerManagerState::new::<Self>(dh));
         self.ordered_input.constraints = Some(PointerConstraintsState::new::<Self>(dh));

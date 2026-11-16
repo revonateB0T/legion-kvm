@@ -525,7 +525,8 @@ fn exercise_input(locked: bool) {
         1080,
     )
     .expect("state");
-    state.enable_relative_input(&handle);
+    // Local forwarding states must advertise relative input themselves; the
+    // KMS game path never gets a separate enable call.
     let (server, socket) = UnixStream::pair().expect("socket");
     let shutdown = socket.try_clone().expect("shutdown");
     handle

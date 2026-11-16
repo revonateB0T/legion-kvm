@@ -1,4 +1,4 @@
-//! Input from this VM's virtual keyboard and tablet, never host input devices.
+//! Input from this VM's virtual keyboard, mouse, and tablet, never host input devices.
 use anyhow::{Context, Result, ensure};
 use legion_display_channel::input_events::{Batch, Event, TimedEvent};
 use std::{
@@ -44,29 +44,79 @@ fn axis(file: &File, code: u8) -> Result<Option<Axis>> {
     }))
 }
 
-#[derive(Default)]
 struct Decoder {
     absolute: Option<[Axis; 2]>,
-    dirty: bool,
+    abs_dirty: bool,
+    rel_delta: [i32; 2],
+    rel_dirty: bool,
+    cursor: [f64; 2],
     dropped: bool,
 }
+
+impl Default for Decoder {
+    fn default() -> Self {
+        Self {
+            absolute: None,
+            abs_dirty: false,
+            rel_delta: [0, 0],
+            rel_dirty: false,
+            cursor: [0.5, 0.5],
+            dropped: false,
+        }
+    }
+}
+
 impl Decoder {
-    fn flush(&mut self, events: &mut Vec<Event>) {
-        if self.dirty
+    fn flush(&mut self, width: u32, height: u32, events: &mut Vec<Event>) {
+        if self.abs_dirty
             && let Some([x, y]) = self.absolute
         {
-            events.push(Event::Absolute {
-                x: x.normalized(),
-                y: y.normalized(),
-            });
+            let nx = x.normalized();
+            let ny = y.normalized();
+            self.cursor = [nx, ny];
+            events.push(Event::Absolute { x: nx, y: ny });
         }
-        self.dirty = false;
+        self.abs_dirty = false;
+
+        if self.rel_dirty {
+            let dx = f64::from(self.rel_delta[0]);
+            let dy = f64::from(self.rel_delta[1]);
+            if dx != 0.0 || dy != 0.0 {
+                events.push(Event::Relative {
+                    dx,
+                    dy,
+                    raw_dx: dx,
+                    raw_dy: dy,
+                });
+                if width > 0 && height > 0 {
+                    self.cursor[0] = (self.cursor[0] + dx / f64::from(width)).clamp(0.0, 1.0);
+                    self.cursor[1] = (self.cursor[1] + dy / f64::from(height)).clamp(0.0, 1.0);
+                    events.push(Event::Absolute {
+                        x: self.cursor[0],
+                        y: self.cursor[1],
+                    });
+                }
+            }
+            self.rel_delta = [0, 0];
+            self.rel_dirty = false;
+        }
     }
-    fn event(&mut self, kind: u16, code: u16, value: i32, events: &mut Vec<Event>) {
+
+    fn event(
+        &mut self,
+        kind: u16,
+        code: u16,
+        value: i32,
+        width: u32,
+        height: u32,
+        events: &mut Vec<Event>,
+    ) {
         if kind == 0 && code == 3 {
-            // SYN_DROPPED: do not retain stuck keys.
+            // SYN_DROPPED: do not retain stuck keys or partial motion.
             events.push(Event::Reset);
-            self.dirty = false;
+            self.abs_dirty = false;
+            self.rel_delta = [0, 0];
+            self.rel_dirty = false;
             self.dropped = true;
             return;
         }
@@ -77,15 +127,23 @@ impl Decoder {
             return;
         }
         match (kind, code) {
-            (0, 0) => self.flush(events),
+            (0, 0) => self.flush(width, height, events),
+            // EV_ABS: ABS_X (0) / ABS_Y (1)
             (3, 0..=1) => {
                 if let Some(axes) = &mut self.absolute {
                     axes[usize::from(code)].value = value;
-                    self.dirty = true;
+                    self.abs_dirty = true;
                 }
             }
+            // EV_REL: REL_X (0) / REL_Y (1)
+            (2, 0..=1) => {
+                let idx = usize::from(code);
+                self.rel_delta[idx] = self.rel_delta[idx].saturating_add(value);
+                self.rel_dirty = true;
+            }
+            // EV_KEY: buttons and keys
             (1, _) if value == 0 || value == 1 => {
-                self.flush(events);
+                self.flush(width, height, events);
                 events.push(if (0x110..=0x117).contains(&code) {
                     Event::Button {
                         code: u32::from(code),
@@ -98,8 +156,9 @@ impl Decoder {
                     }
                 });
             }
+            // EV_REL: REL_HWHEEL (6) / REL_WHEEL (8)
             (2, 6 | 8) => {
-                self.flush(events);
+                self.flush(width, height, events);
                 events.push(Event::Axis {
                     axis: u32::from(code == 6),
                     value: -f64::from(value) * 15.0,
@@ -112,6 +171,7 @@ impl Decoder {
         }
     }
 }
+
 struct Device {
     file: File,
     decoder: Decoder,
@@ -178,7 +238,9 @@ impl Input {
                         let code = u16::from_ne_bytes([bytes[18], bytes[19]]);
                         let value =
                             i32::from_ne_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
-                        device.decoder.event(kind, code, value, &mut events);
+                        device
+                            .decoder
+                            .event(kind, code, value, width, height, &mut events);
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -189,6 +251,9 @@ impl Input {
         Ok(Batch {
             width,
             height,
+            // Both virtio-mouse EV_REL and tablet EV_ABS produce relative
+            // events, so pointer-lock clients can rely on relative input.
+            relative_supported: true,
             events: events
                 .into_iter()
                 .map(|event| TimedEvent {

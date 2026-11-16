@@ -182,7 +182,13 @@ impl State {
         width: u32,
         height: u32,
     ) -> Result<Self> {
-        Self::with_formats(dh, None, formats, dev, width, height)
+        let mut state = Self::with_formats(dh, None, formats, dev, width, height)?;
+        // Local presentation owns the whole seat: the guest evdev source can
+        // always provide relative motion (EV_REL, or deltas synthesized from
+        // absolute axes), so pointer-lock clients must see the protocols from
+        // their first registry roundtrip.
+        state.enable_relative_input(dh);
+        Ok(state)
     }
     pub(crate) fn with_formats(
         dh: &DisplayHandle,
